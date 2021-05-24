@@ -1,0 +1,77 @@
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+--drop procedure opp010_set_watermark
+--go
+
+create     procedure [dbo].[opp009_set_watermark] (
+	  @audit_ts VARCHAR(21)					-- mendatory
+	, @transform VARCHAR(255)				-- mendatory
+	, @xtr_end_date datetime				-- mendatory
+	, @xtr_start_date  datetime = null		-- optional
+	/*
+	  @parent_audit_ts VARCHAR(21)				-- mendatory
+	, @transform VARCHAR(255)					-- mendatory
+	, @transform_segment_1  VARCHAR(255) = null	-- optional
+	, @transform_segment_2  VARCHAR(255) = null	-- optional
+	, @wtm_value_1 VARCHAR(255)					-- mendatory
+	, @wtm_value_2 VARCHAR(255) = null			-- optional
+	, @last_execution_watermark_audit_ts  VARCHAR(21) = null -- optional*/
+)
+
+/********************************************************************
+    2020-DEC-07 :
+    DE-13 : First Create
+********************************************************************/
+
+AS
+BEGIN TRY
+
+	IF( @xtr_end_date is not null AND @transform IS NOT NULL AND @transform <>'-1' AND (SELECT COUNT(1) FROM dbo.opt010_watermark_config  WHERE transform = @transform )>0) -- Prevent empty delta data was send
+	BEGIN
+	 
+		DECLARE @number_of_watermark_waiting int = 0;
+
+		select @number_of_watermark_waiting = count(*)  -- Check is there any watermark inserted while the transform was running
+		from dbo.opt010_watermark_config
+		where transform = @transform 
+			and update_ts > @audit_ts
+		;
+
+
+		IF( @number_of_watermark_waiting = 0 OR @xtr_start_date is null )
+		BEGIN
+			UPDATE dbo.opt010_watermark_config SET 
+			watermark = @xtr_end_date,
+			update_ts = @audit_ts
+			WHERE transform = @transform;
+		END
+
+		IF( @number_of_watermark_waiting > 0)
+		BEGIN
+			print 'Unexpected process 
+			There are unexpected inserting watermark value while transform is running , the normal watermark will not insert';
+		END
+
+	END
+	
+
+
+END TRY
+BEGIN CATCH 
+
+    IF @@TRANCOUNT > 0 
+	BEGIN
+		ROLLBACK;
+	END
+
+	DECLARE @errmsg NVARCHAR(2000);
+	SET  @errmsg = ERROR_MESSAGE();
+
+	THROW;
+	
+END CATCH
+GO
