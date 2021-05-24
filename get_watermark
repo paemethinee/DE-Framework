@@ -1,0 +1,128 @@
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE        PROCEDURE [dbo].[opp010_get_watermark]
+    @transform VARCHAR(255)
+AS 
+BEGIN 
+
+/********************************************************************
+    2020-DEC-07 : 
+    DE-13 : First Create
+    2020-DEC-07 : 
+    DE-58 : Support mode and enable column, move decision logic into get watermark.
+********************************************************************/
+
+    SET NOCOUNT ON;
+
+    DECLARE @wtm_new VARCHAR(255);
+    DECLARE @wtm_new_date DATETIME2;
+    DECLARE @wtm_extracted VARCHAR(255);
+    DECLARE @wtm_extracted_date DATETIME2;
+    DECLARE @Result DATETIME2;
+    DECLARE @backday DECIMAL(10,0);
+    DECLARE @man_valid NVARCHAR(MAX);
+    DECLARE @column_name VARCHAR(255);
+    DECLARE @source_name VARCHAR(255);
+    DECLARE @output_format VARCHAR(255);
+    DECLARE @interval_amount INT;
+    DECLARE @interval_unit VARCHAR(255);
+    DECLARE @errmsg NVARCHAR(MAX);
+    DECLARE @stmt NVARCHAR(MAX);
+    DECLARE @mode VARCHAR (255);
+    DECLARE @enable BIT;
+    DECLARE @execution_status VARCHAR(255) = 'execute';
+
+    
+    --SET @transform = 'trans3';
+    
+    
+    
+    --- manual retrieval validation
+    SELECT @source_name=source_name,@column_name=column_name,@man_valid=man_validation, @enable=enable, @mode=mode , @wtm_extracted=COALESCE (watermark,watermark_default), @backday=back_day, @wtm_extracted_date=watermark,@wtm_extracted=FORMAT(watermark, output_format), @interval_unit=interval_unit,@interval_amount=interval_amount, @output_format=output_format  from dbo.opt010_watermark_config  WHERE transform = @transform
+    --SET @man_valid = (SELECT man_validation from dbo.opt010_watermark_config  WHERE transform = @transform)
+    SET @wtm_extracted_date = dateadd(millisecond, -datepart(millisecond,@wtm_extracted_date),@wtm_extracted_date)
+    
+    IF (@transform = '-1' OR (SELECT COUNT(1) FROM dbo.opt010_watermark_config  WHERE transform = @transform )>0)
+    BEGIN
+        IF (@enable=1)
+            BEGIN
+            ---- check if there is manual validation logic provided.
+            IF (@man_valid IS NOT NULL AND @man_valid <>'')
+            BEGIN
+        
+                
+                SET @stmt = FORMATMESSAGE(N'SELECT @Result=%s from dbo.opt010_watermark_config where transform=''%s'';',@man_valid,@transform)
+                --SET @wtm_new = EXEC sp_executesql @stmt
+                EXEC sp_executesql @stmt, N'@Result DATETIME2 OUTPUT',@wtm_new_date OUTPUT
+                --SET @wtm_new_date = CAST(@RESULT AS DATETIME2)
+
+        
+            END
+            ELSE IF (@interval_amount >0)
+            BEGIN 
+                DECLARE @cal_watermark_interval DATETIME2;
+                DECLARE @cal_watermark_back_day DATETIME2;
+            --- Calculate watermark from both interval and back_day
+                ---get watermark by interval
+                SET @stmt = FORMATMESSAGE(N'SELECT @Result= DATEADD(%s,interval_amount,watermark)  from dbo.opt010_watermark_config where transform=''%s'';',@interval_unit,@transform)
+                EXEC sp_executesql @stmt, N'@Result DATETIME2 OUTPUT',@cal_watermark_interval OUTPUT
+
+                ---get watermark by back_day
+                SELECT @cal_watermark_back_day=DATEADD(day, -back_day , SYSDATETIMEOFFSET() AT TIME ZONE 'SE Asia Standard Time') from dbo.opt010_watermark_config  WHERE transform = @transform
+                ---choose wtm_new_date from nearlest value
+                SELECT @wtm_new_date=LEAST(@cal_watermark_back_day,@cal_watermark_interval)  
+                
+            END
+            ELSE IF (@interval_amount <0)
+            BEGIN 
+            ---- INVALID @interval_amount
+                SET @errmsg = 'interval_amount is lower than zero'
+                RAISERROR( @errmsg,16,1)
+            END
+            ELSE
+            BEGIN
+            --- Normal backday.
+            -- calculated with format watermark
+
+                SELECT @wtm_new_date=DATEADD(day, -back_day , SYSDATETIMEOFFSET() AT TIME ZONE 'SE Asia Standard Time') from dbo.opt010_watermark_config  WHERE transform = @transform
+                
+            END
+
+            --- ROUNDING BY MODE
+            IF (@mode='DAILY')
+            BEGIN
+                --- round up time to midnight
+                SET @wtm_new_date = DATEADD(ms, -2, DATEADD(dd, 1,DATEDIFF(dd, 0, @wtm_new_date) ))
+                SET @wtm_new_date = dateadd(millisecond, -datepart(millisecond,@wtm_new_date),@wtm_new_date)
+                SET @wtm_extracted_date = DATEADD(ms, -2, DATEADD(dd, 1,DATEDIFF(dd, 0, @wtm_extracted_date) ))
+                SET @wtm_extracted_date = dateadd(millisecond, -datepart(millisecond,@wtm_extracted_date),@wtm_extracted_date)
+            END
+            --- SET FORMAT @wtm_new
+            SET @wtm_new = (SELECT FORMAT(@wtm_new_date ,@output_format))
+            --- SET EXECUTION STATUS
+            IF (@wtm_new_date <= @wtm_extracted_date)
+            ---- SKIPPED FLAGGED
+            SELECT @source_name as source_name, @column_name as column_name, @wtm_extracted as xtr_start_ts, @wtm_new as xtr_end_ts, @wtm_extracted_date as xtr_start_date, @wtm_new_date as xtr_end_date, 'skipped' as execution_status
+            ELSE
+            --- RETURN RESULT
+            SELECT @source_name as source_name, @column_name as column_name, @wtm_extracted as xtr_start_ts, @wtm_new as xtr_end_ts, @wtm_extracted_date as xtr_start_date, @wtm_new_date as xtr_end_date, @execution_status as execution_status
+            
+        END
+        ELSE
+        -- DISABLED TRANSFORMATION
+        SELECT '-1' as xtr_start_ts, '-1' as xtr_end_ts, '-1' as xtr_start_date, '-1' as xtr_end_date, 'skipped' as execution_status
+
+       
+
+    END
+    ELSE
+    BEGIN
+        ---- return -1 when no config was found.
+        SELECT '-1' as xtr_start_ts, '-1' as xtr_end_ts, '-1' as xtr_start_date, '-1' as xtr_end_date, @execution_status as execution_status
+    END
+END
+GO
