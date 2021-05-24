@@ -1,0 +1,51 @@
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE       PROCEDURE [dbo].[opp011_get_config]
+    @config_filter VARCHAR(256) ,
+    @all_config_keys VARCHAR(256) = '-1'
+AS 
+/********************************************************************
+	2020-Sep-14 : 
+	DDP-28 : First Create
+********************************************************************/
+
+BEGIN 
+
+	SET NOCOUNT ON;
+
+BEGIN TRY
+		DECLARE @all_config_keys_quote VARCHAR(256) = REPLACE (@all_config_keys,',',''',''')
+		DECLARE @stmt NVARCHAR(MAX);
+        SET @stmt = FORMATMESSAGE(N'SELECT %s from
+        (
+        select config_value,config_key from dbo.opt009_var_config WHERE config_filter = ''%s'' AND config_key in (''%s'') 
+        ) d
+        pivot
+        (
+        max(config_value)
+        for config_key in (%s)
+        )
+        piv;'
+        ,@all_config_keys
+        ,@config_filter
+        ,@all_config_keys_quote
+        ,@all_config_keys)
+
+        EXEC sp_executesql @stmt
+		;
+
+END TRY
+
+BEGIN CATCH
+
+	THROW;
+
+END CATCH
+  
+
+END;
+GO
