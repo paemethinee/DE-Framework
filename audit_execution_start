@@ -1,0 +1,75 @@
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE         PROCEDURE [dbo].[opp001_audit_execution_start]
+	 @audit_ts VARCHAR(21) = '-1' 
+	,@parent_audit_ts VARCHAR(21) = '-1' 
+	,@root_ts VARCHAR(21) = '-1' 
+	,@step_type NVARCHAR(255)
+	,@stepname NVARCHAR(255)
+	,@target_table NVARCHAR(255)
+AS 
+/********************************************************************
+	2020-Sep-06
+	DDP-2 : First Create, SYSTEMDATETIME() was change to SYSDATETIMEOFFSET() AT TIME ZONE 'SE Asia Standard Time' due to Azure SQL Database do not have timezone configuration
+********************************************************************/
+BEGIN 
+	-- 
+	-- SET NOCOUNT ON added to prevent extra result sets from
+	-- interfering with SELECT statements.
+	SET NOCOUNT ON;
+
+	BEGIN TRY
+
+		IF @audit_ts = '-1' SET @audit_ts = FORMAT(SYSDATETIMEOFFSET() AT TIME ZONE 'SE Asia Standard Time', 'yyyyMMddHHmmssfffffff');
+		IF @parent_audit_ts = '-1' SET @parent_audit_ts = @audit_ts;
+		IF @root_ts = '-1' SET @root_ts = @parent_audit_ts;
+
+
+		--create step and set starttime
+		INSERT INTO dbo.opt001_execution_audit (
+			 audit_ts 
+			,parent_audit_ts
+			,root_ts
+			,step_type
+			,step_name
+			,execution_time
+			,execution_status
+			,execution_user
+			,target_table
+		)
+		SELECT 
+			 @audit_ts   
+			,@parent_audit_ts 
+			,@root_ts 
+			,@step_type
+			,@stepname
+			,TRY_CAST(
+				TRY_CAST(
+					SUBSTRING(@audit_ts, 1, 4) + '-' + 
+					SUBSTRING(@audit_ts, 5, 2) + '-' + 
+					SUBSTRING(@audit_ts, 7, 2) + ' ' + 
+					SUBSTRING(@audit_ts, 9, 2) + ':' + 
+					SUBSTRING(@audit_ts, 11, 2) + ':' + 
+					SUBSTRING(@audit_ts, 13, 2) + '. ' + 
+					SUBSTRING(@audit_ts, 15, 7)
+					AS DATETIME2(7)
+				) AS DATETIME) AS execution_time 
+			,'started'
+			,SUSER_NAME()
+			,@target_table;
+
+	END TRY
+
+	BEGIN CATCH
+
+		THROW;
+
+	END CATCH
+  
+
+END;
+GO
