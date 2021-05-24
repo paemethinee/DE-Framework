@@ -1,0 +1,128 @@
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE       PROCEDURE [dbo].[opp002_audit_execution_end]
+	 @parent_audit_ts VARCHAR(21) = '-1' 
+	,@root_ts VARCHAR(21) = '-1' 
+	,@step_type NVARCHAR(21)
+	,@stepname NVARCHAR(255)
+	,@new_rows INT = 0
+	,@updated_rows INT = 0
+	,@deleted_rows INT = 0 
+	,@target_table NVARCHAR(255)
+	,@execution_status NVARCHAR(21) = null
+	,@xtr_start_date NVARCHAR(255) = '-1'
+	,@xtr_end_date NVARCHAR(255) = '-1'
+	,@pipeline_run_id NVARCHAR(255) = '-1'
+AS 
+/********************************************************************
+	2020-Sep-06 : 
+	DDP-2  : First Create, SYSTEMDATETIME() was change to SYSDATETIMEOFFSET() AT TIME ZONE 'SE Asia Standard Time' due to Azure SQL Database do not have timezone configuration
+	DE-24 : Fix Duplicated audit_ts
+	2020-Dec-02 : l
+	DE-13  : Add manual execution status input, for supporting the skipped status required by watermarking.
+	2020-Dec-10 : 
+	DE-24 : Fix Duplicated audit_ts
+	2020-Dec-29 : 
+    DE-59 : add xtr_start_date, xtr_end_date add pipeline_run_id
+    2021-Jan-17 : Tanakorn Padungkiatsakul
+    DE-24 : Fix duplicated audit_ts with RAND(CHECKSUM(NEWID()))
+********************************************************************/
+
+DECLARE @audit_ts VARCHAR(21);
+
+BEGIN 
+
+	-- SET NOCOUNT ON added to prevent extra result sets from
+	-- interfering with SELECT statements.
+	SET NOCOUNT ON;
+IF (@execution_status = '-1') SET @execution_status = null
+
+BEGIN TRY
+		
+		SET @audit_ts = FORMAT(DATEADD( ms , FLOOR(RAND(CHECKSUM(NEWID()))*(1000)) , SYSDATETIMEOFFSET() AT TIME ZONE 'SE Asia Standard Time'), 'yyyyMMddHHmmssfffffff'); --DE-24
+		IF @parent_audit_ts = '-1' SET @parent_audit_ts = @audit_ts;
+		IF @root_ts = '-1' SET @root_ts = @parent_audit_ts;
+
+		DECLARE @started_execution_time datetime2;
+
+		DECLARE @actual_xtr_start_date DATETIME2 = null;
+		DECLARE @actual_xtr_end_date DATETIME2 = null;
+		IF @xtr_start_date <> '-1' SET @actual_xtr_start_date = CAST(@xtr_start_date AS DATETIME2);
+		IF @xtr_end_date <> '-1' SET @actual_xtr_end_date = CAST(@xtr_end_date AS DATETIME2);
+		IF @pipeline_run_id = '-1' SET @pipeline_run_id = NULL;
+
+		--get execution time of started event
+		SELECT @started_execution_time = execution_time
+		 FROM opt001_execution_audit
+		WHERE execution_status = 'started'
+		  AND parent_audit_ts = @parent_audit_ts
+		  AND step_name = @stepname
+		  AND target_table = @target_table;
+		
+		DECLARE @execution_time DATETIME2;
+
+		SET @execution_time = TRY_CAST(
+								TRY_CAST(
+									SUBSTRING(@audit_ts, 1, 4) + '-' + 
+									SUBSTRING(@audit_ts, 5, 2) + '-' + 
+									SUBSTRING(@audit_ts, 7, 2) + ' ' + 
+									SUBSTRING(@audit_ts, 9, 2) + ':' + 
+									SUBSTRING(@audit_ts, 11, 2) + ':' + 
+									SUBSTRING(@audit_ts, 13, 2) + '. ' + 
+									SUBSTRING(@audit_ts, 15, 7)
+									AS DATETIME2(7)
+								) AS DATETIME);
+
+		--create step and set EXECUTION TIME
+		INSERT INTO dbo.opt001_execution_audit (
+			 audit_ts 
+			,parent_audit_ts
+			,root_ts
+			,step_type
+			,step_name
+			,execution_time 
+			,execution_status
+			,execution_user
+			,new_rows 
+			,updated_rows 
+			,deleted_rows 
+			,target_table
+			,duration 
+			,xtr_start_date
+			,xtr_end_date
+			,pipeline_run_id
+		)
+		SELECT 
+			 @audit_ts   
+			,@parent_audit_ts 
+			,@root_ts 
+			,@step_type
+			,@stepname
+			,@execution_time 
+			,COALESCE(@execution_status,'success')
+			,SUSER_NAME()
+			,COALESCE(@new_rows, 0)
+			,COALESCE(@updated_rows, 0)
+			,COALESCE(@deleted_rows, 0)
+			,@target_table
+			,ABS(DATEDIFF(SECOND, @started_execution_time, @execution_time))
+			,@actual_xtr_start_date
+			,@actual_xtr_end_date	
+			,@pipeline_run_id		
+		;
+
+END TRY
+
+BEGIN CATCH
+
+	THROW;
+
+END CATCH
+  
+
+END;
+GO
